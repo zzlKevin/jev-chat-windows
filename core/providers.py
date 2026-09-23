@@ -15,8 +15,12 @@ OPENROUTER_BASE = "https://openrouter.ai/api/v1"  # OpenAI 兼容，列模型走
 # Jev 判断只有 OpenRouter 这条路要自己拼 HTTP：typesafe_sdk 把路径写死成 /v1/systemone，打不到这个地址
 OPENROUTER_DECISIONS = "https://openrouter.ai/api/alpha/decisions"
 TYPESAFE_BASE = "https://api.typesafe.ai"
+# OpenCode Zen：模型列表 OpenAI 兼容（/zen/v1/models），Jev 判断走它自己的 systemone 端点，
+# 请求/响应体跟 OpenRouter 的 decisions 一模一样（都是 TypeSafe System One 格式）
+OPENCODE_ZEN_BASE = "https://opencode.ai/zen/v1"
+OPENCODE_ZEN_DECISIONS = "https://opencode.ai/zen/v1/systemone"
 
-JEV_ENV = "JEV_API_KEY"    # 判断那把，不管选 OpenRouter 还是 TypeSafe
+JEV_ENV = "JEV_API_KEY"    # 判断那把，不管选 OpenRouter / OpenCode Zen / TypeSafe
 LLM_ENV = "LLM_API_KEY"    # 起草那把，不管选哪家语言模型
 # 迁移：老版本按来源各存一个变量。新变量空着、老变量有值就先用老的（保存时抄进新的）
 LEGACY = {JEV_ENV: "OPENROUTER_API_KEY", LLM_ENV: "DEEPSEEK_API_KEY"}
@@ -24,6 +28,7 @@ LEGACY = {JEV_ENV: "OPENROUTER_API_KEY", LLM_ENV: "DEEPSEEK_API_KEY"}
 _Jev = namedtuple("_Jev", "name default")
 JEV_PROVIDERS = {
     "openrouter": _Jev("OpenRouter", "typesafe/jev-1.13"),
+    "opencode": _Jev("OpenCode Zen（免费）", "jev-1.13-free"),
     "typesafe": _Jev("TypeSafe 直连", "jev-latest"),
 }
 
@@ -70,6 +75,10 @@ if __name__ == "__main__":
     assert DRAFT_PROVIDERS["deepseek"].extra(False) == {"thinking": {"type": "disabled"}}
     assert DRAFT_PROVIDERS["openrouter"].extra(True) == {"reasoning": {"enabled": True}}
     assert DRAFT_PROVIDERS["moonshot"].extra(True) == {}
+    # 判断来源三家；OpenCode Zen 默认免费档，端点常量得跟文档对上
+    assert set(JEV_PROVIDERS) == {"openrouter", "opencode", "typesafe"}
+    assert JEV_PROVIDERS["opencode"].default == "jev-1.13-free"
+    assert OPENCODE_ZEN_DECISIONS == "https://opencode.ai/zen/v1/systemone"
     # 全程只有两把 key，脱敏还得管老名字
     assert ENV_VARS == ["DEEPSEEK_API_KEY", "JEV_API_KEY", "LLM_API_KEY", "OPENROUTER_API_KEY"]
     print("providers ok")

@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Jev 判断 API 客户端：OpenRouter 或 TypeSafe 直连。
+"""Jev 判断 API 客户端：OpenRouter、OpenCode Zen 或 TypeSafe 直连。
 
-TypeSafe 直连走官方 `typesafe_sdk`；OpenRouter 这条是唯一自己拼 HTTP 的路——
-SDK 把路径写死成 `/v1/systemone`，打不到 OpenRouter 的 `/api/alpha/decisions`。
-两条路返回同一个 dict 形状，engine 不关心跑的是哪条。key 只从环境变量读，绝不打进日志。
+TypeSafe 直连走官方 `typesafe_sdk`；OpenRouter 和 OpenCode Zen 是仅有的两条自己拼 HTTP 的路——
+SDK 把路径写死成 `/v1/systemone`，既打不到 OpenRouter 的 `/api/alpha/decisions`，
+也打不到 Zen 的 `/zen/v1/systemone`。好在那两个端点的请求/响应是同一个 TypeSafe System One
+格式，共用一条 urllib 的路就行。三条路返回同一个 dict 形状，engine 不关心跑的是哪条。
+key 只从环境变量读，绝不打进日志。
 """
 
 from __future__ import annotations
@@ -17,11 +19,13 @@ import urllib.request
 from typing import NoReturn
 
 try:  # 当模块导入 / 当脚本直接跑 都能用
-    from .providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY, OPENROUTER_BASE,
-                            OPENROUTER_DECISIONS, TYPESAFE_BASE)
+    from .providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY, OPENCODE_ZEN_BASE,
+                            OPENCODE_ZEN_DECISIONS, OPENROUTER_BASE, OPENROUTER_DECISIONS,
+                            TYPESAFE_BASE)
 except ImportError:
-    from providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY, OPENROUTER_BASE,
-                           OPENROUTER_DECISIONS, TYPESAFE_BASE)
+    from providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY, OPENCODE_ZEN_BASE,
+                           OPENCODE_ZEN_DECISIONS, OPENROUTER_BASE, OPENROUTER_DECISIONS,
+                           TYPESAFE_BASE)
 
 MAX_RETRIES = 3
 
@@ -89,15 +93,18 @@ def ask(state: dict, questions: dict, timeout: float = 20,
         provider: str = "openrouter", model: str | None = None) -> dict:
     """问 Jev 一轮判断，返回 {"answers": {名字: 答案}, "usage": {...}}。
 
-    provider ∈ JEV_PROVIDERS（openrouter / typesafe 直连）；model=None 用该来源的默认模型。
-    两条路返回的 dict 形状一模一样，429/529 都会退避重试。绝不打印或写出 key。
+    provider ∈ JEV_PROVIDERS（openrouter / opencode zen / typesafe 直连）；model=None 用该来源的默认模型。
+    三条路返回的 dict 形状一模一样，429/529 都会退避重试。绝不打印或写出 key。
     """
     spec = JEV_PROVIDERS.get(provider) or JEV_PROVIDERS["openrouter"]
-    key = _api_key(JEV_ENV)  # 两家共用同一把 key，换来源不用重填
+    key = _api_key(JEV_ENV)  # 几家共用同一把 key，换来源要重填一次
     model = model or spec.default
     if provider == "typesafe":
         return _ask_typesafe(state, questions, key, model, timeout)
-    return _ask_openrouter(state, questions, key, model, timeout)
+    # OpenRouter 和 OpenCode Zen 的判断接口是同一个形状（TypeSafe System One），
+    # 只是地址不同，共用同一条手写 urllib 的路
+    url = OPENCODE_ZEN_DECISIONS if provider == "opencode" else OPENROUTER_DECISIONS
+    return _ask_openrouter(state, questions, key, model, timeout, url)
 
 
 def _answer(answer) -> dict:
@@ -131,8 +138,10 @@ def _ask_typesafe(state: dict, questions: dict, key: str, model: str, timeout: f
     }
 
 
-def _ask_openrouter(state: dict, questions: dict, key: str, model: str, timeout: float) -> dict:
-    """OpenRouter 的 /api/alpha/decisions，手写 urllib。429/529 退避重试 3 次。"""
+def _ask_openrouter(state: dict, questions: dict, key: str, model: str, timeout: float,
+                    url: str = OPENROUTER_DECISIONS) -> dict:
+    """手写 urllib 打 TypeSafe System One 形状的判断接口：OpenRouter 的 /api/alpha/decisions，
+    或 OpenCode Zen 的 /zen/v1/systemone（url 参数区分）。429/529 退避重试 3 次。"""
     payload = json.dumps(
         {"model": model, "state": state, "questions": questions},
         ensure_ascii=False,
@@ -142,7 +151,7 @@ def _ask_openrouter(state: dict, questions: dict, key: str, model: str, timeout:
     last_body = ""
     for attempt in range(MAX_RETRIES + 1):
         req = urllib.request.Request(
-            OPENROUTER_DECISIONS,
+            url,
             data=payload,
             method="POST",
             headers={
@@ -200,6 +209,10 @@ def list_models(provider: str, key: str, timeout: float = 10) -> list[str]:
         from .llm import list_models as _models
     except ImportError:
         from llm import list_models as _models
+    if provider == "opencode":
+        # Zen 上几十个模型，只有 jev-* 这几个走 systemone 判断端点
+        return [i for i in _models("openai", OPENCODE_ZEN_BASE, key, timeout)
+                if i.startswith("jev")]
     # OpenRouter 上几百个模型，只有 typesafe/ 这几个是 Jev
     return [i for i in _models("openai", OPENROUTER_BASE, key, timeout)
             if i.startswith("typesafe/")]
@@ -304,6 +317,18 @@ if __name__ == "__main__":
     with patch("llm.list_models" if __package__ is None else "core.llm.list_models",
                lambda *a, **k: ["openai/gpt-4o", "typesafe/jev-1.13", "typesafe/jev-preview"]):
         assert list_models("openrouter", "or-key") == ["typesafe/jev-1.13", "typesafe/jev-preview"]
+
+    # OpenCode Zen 那条：同一个 body 形状，只是打到 /zen/v1/systemone，默认模型换成免费档
+    with patch.object(urllib.request, "urlopen", _fake_urlopen):
+        assert ask({"chat": {}}, questions, provider="opencode") == body
+    assert seen["url"] == OPENCODE_ZEN_DECISIONS
+    assert seen["body"]["model"] == "jev-1.13-free" and seen["body"]["questions"] == questions
+
+    with patch("llm.list_models" if __package__ is None else "core.llm.list_models",
+               lambda protocol, base, key, timeout=10: (
+                   ["jev-1.13", "jev-1.13-free", "claude-fable-5", "kimi-k3"]
+                   if "opencode.ai" in (base or "") else ["openai/gpt-4o"])):
+        assert list_models("opencode", "zen-key") == ["jev-1.13", "jev-1.13-free"]
 
     assert redact_secrets("key=ts-key or-key") == "key=[REDACTED] [REDACTED]"
     print("jev_client ok")
